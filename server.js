@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require("uuid");
 
-// ---------------- MEMORY (persists on warm instances) ----------------
+// ---------------- MEMORY (persists only on warm instances) ----------------
 let sessions = {};
 
 // ---------------- UTIL FUNCTIONS ----------------
@@ -76,166 +76,138 @@ function structuredReply(query) {
   };
 }
 
-// ----------------------------------------------------------------------
-//                       SERVERLESS HANDLER
-// ----------------------------------------------------------------------
+// ---------------- SERVERLESS HANDLER ----------------
 
 exports.handler = async (event) => {
-  const { path, httpMethod } = event;
-
-  // Enable CORS
-  const headers = {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "*",
-  };
-
-  // Preflight CORS
-  if (httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers };
-  }
-
-  // ---------------- ROUTES ----------------
-
-  // GET /api/sessions
-  if (path === "/api/sessions" && httpMethod === "GET") {
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify(listSessions()),
+  try {
+    const headers = {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "*",
     };
-  }
 
-  // GET /api/new-chat
-  if (path === "/api/new-chat" && httpMethod === "GET") {
-    const session = createSession();
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
-        sessionId: session.id,
-        createdAt: session.createdAt,
-      }),
-    };
-  }
+    // Preflight CORS
+    if (event.httpMethod === "OPTIONS") {
+      return { statusCode: 200, headers };
+    }
 
-  // GET /api/session/:id
-  if (path.startsWith("/api/session/") && httpMethod === "GET") {
-    const id = path.split("/").pop();
-    const session = getSession(id);
+    const path = event.path || "/";
 
-    if (!session) {
+    // ---------------- ROUTES ----------------
+
+    // GET /sessions
+    if (path.endsWith("/sessions") && event.httpMethod === "GET") {
+      return { statusCode: 200, headers, body: JSON.stringify(listSessions()) };
+    }
+
+    // GET /new-chat
+    if (path.endsWith("/new-chat") && event.httpMethod === "GET") {
+      const session = createSession();
       return {
-        statusCode: 404,
+        statusCode: 200,
         headers,
-        body: JSON.stringify({ error: "Session not found" }),
+        body: JSON.stringify({ sessionId: session.id, createdAt: session.createdAt }),
       };
     }
 
-    const history = session.messages.map((m) => ({
-      id: m.id,
-      type: m.role,
-      content: m.text,
-      tabularData: m.structured ? m.structured.table : undefined,
-      timestamp: m.createdAt,
-      feedback: m.feedback || null,
-    }));
+    // GET /session/:id
+    if (path.includes("/session/") && event.httpMethod === "GET") {
+      const id = path.split("/").pop();
+      const session = getSession(id);
 
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify(history),
-    };
-  }
-
-  // POST /api/chat/:id
-  if (path.startsWith("/api/chat/") && httpMethod === "POST") {
-    const id = path.split("/").pop();
-    const session = getSession(id);
-
-    if (!session) {
-      return {
-        statusCode: 400,
-        headers,
-        body: JSON.stringify({ error: "Invalid session" }),
-      };
-    }
-
-    const body = JSON.parse(event.body || "{}");
-    const question = body.question;
-
-    if (!question) {
-      return {
-        statusCode: 400,
-        headers,
-        body: JSON.stringify({ error: "Missing question" }),
-      };
-    }
-
-    // Save user message
-    addMessage(id, "user", question);
-
-    // Generate assistant reply
-    const structuredData = structuredReply(question);
-    const assistant = addMessage(
-      id,
-      "assistant",
-      structuredData.description,
-      structuredData
-    );
-
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
-        id: assistant.id,
-        type: assistant.role,
-        content: assistant.text,
-        tabularData: assistant.structured.table,
-        timestamp: assistant.createdAt,
-        feedback: assistant.feedback || null,
-        newTitle: session.title,
-      }),
-    };
-  }
-
-  // POST /api/messages/:id/feedback
-  if (path.startsWith("/api/messages/") && httpMethod === "POST") {
-    const messageId = path.split("/").pop();
-    const { feedback } = JSON.parse(event.body || "{}");
-
-    let found = false;
-
-    for (const session of Object.values(sessions)) {
-      const msg = session.messages.find(
-        (m) => m.id === messageId && m.role === "assistant"
-      );
-      if (msg) {
-        msg.feedback = feedback;
-        found = true;
-        break;
+      if (!session) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: "Session not found" }) };
       }
+
+      const history = session.messages.map((m) => ({
+        id: m.id,
+        type: m.role,
+        content: m.text,
+        tabularData: m.structured ? m.structured.table : undefined,
+        timestamp: m.createdAt,
+        feedback: m.feedback || null,
+      }));
+
+      return { statusCode: 200, headers, body: JSON.stringify(history) };
     }
 
-    if (!found) {
+    // POST /chat/:id
+    if (path.includes("/chat/") && event.httpMethod === "POST") {
+      const id = path.split("/").pop();
+      const session = getSession(id);
+
+      if (!session) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid session" }) };
+      }
+
+      let body = {};
+      try {
+        body = JSON.parse(event.body || "{}");
+      } catch {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
+      }
+
+      const question = body.question;
+      if (!question) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing question" }) };
+      }
+
+      addMessage(id, "user", question);
+      const structuredData = structuredReply(question);
+      const assistant = addMessage(id, "assistant", structuredData.description, structuredData);
+
       return {
-        statusCode: 404,
+        statusCode: 200,
         headers,
-        body: JSON.stringify({ error: "Message not found" }),
+        body: JSON.stringify({
+          id: assistant.id,
+          type: assistant.role,
+          content: assistant.text,
+          tabularData: assistant.structured.table,
+          timestamp: assistant.createdAt,
+          feedback: assistant.feedback || null,
+          newTitle: session.title,
+        }),
       };
     }
 
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ success: true, feedback }),
-    };
-  }
+    // POST /messages/:id/feedback
+    if (path.includes("/messages/") && event.httpMethod === "POST") {
+      const messageId = path.split("/").pop();
 
-  // Unknown route
-  return {
-    statusCode: 404,
-    headers,
-    body: JSON.stringify({ error: "Route not found" }),
-  };
+      let body = {};
+      try {
+        body = JSON.parse(event.body || "{}");
+      } catch {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
+      }
+
+      const feedback = body.feedback;
+      if (!feedback) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing feedback" }) };
+      }
+
+      let found = false;
+      for (const session of Object.values(sessions)) {
+        const msg = session.messages.find((m) => m.id === messageId && m.role === "assistant");
+        if (msg) {
+          msg.feedback = feedback;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: "Message not found" }) };
+      }
+
+      return { statusCode: 200, headers, body: JSON.stringify({ success: true, feedback }) };
+    }
+
+    // Unknown route
+    return { statusCode: 404, headers, body: JSON.stringify({ error: "Route not found" }) };
+  } catch (err) {
+    console.error("Function crashed:", err);
+    return { statusCode: 500, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ error: "Internal Server Error" }) };
+  }
 };
