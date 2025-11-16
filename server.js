@@ -5,20 +5,35 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const PORT = 5000;
 
-const sessions = {}; // sessionId -> { id, title, createdAt, messages: [] }
+// Sessions stored in memory
+const sessions = {};
 
+// Create a new session
 function createSession(title = null) {
   const id = uuidv4();
   const createdAt = new Date().toISOString();
-  const sTitle = title || `Chat - ${new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
-  sessions[id] = { id, title: sTitle, createdAt, messages: [] };
-  console.log(`Created new session: ${id}`);
+  const sTitle =
+    title ||
+    `Chat - ${new Date(createdAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })}`;
+
+  sessions[id] = {
+    id,
+    title: sTitle,
+    createdAt,
+    messages: [],
+  };
+
   return sessions[id];
 }
 
+// List all sessions
 function listSessions() {
   return Object.values(sessions)
-    .map(s => ({
+    .map((s) => ({
       id: s.id,
       title: s.title,
       createdAt: s.createdAt,
@@ -27,30 +42,40 @@ function listSessions() {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
+// Get a session
 function getSession(id) {
   return sessions[id] || null;
 }
 
+// Add message
 function addMessage(sessionId, role, text, structured = null, feedback = null) {
   const s = sessions[sessionId];
   if (!s) return null;
 
-  const msg = { id: uuidv4(), role, text, structured, feedback, createdAt: new Date().toISOString() };
-  s.messages.push(msg);
+  const msg = {
+    id: uuidv4(),
+    role,
+    text,
+    structured,
+    feedback,
+    createdAt: new Date().toISOString(),
+  };
 
+  s.messages.push(msg);
   return msg;
 }
 
+// Mock structured response
 function sampleStructuredResponse(query) {
   const now = new Date().toISOString();
   return {
-    description: `Here is a mock analysis for your query about "${query.substring(0, 20)}...":`,
+    description: `Processed your query: "${query.substring(0, 20)}..."`,
     table: {
       headers: ['Metric', 'Value', 'Note'],
       rows: [
-        ['Query Length (chars)', query.length, 'Input metric'],
-        ['Success Rate (%)', (Math.random() * 100).toFixed(2), 'Mock data'],
-        ['Latency (ms)', (Math.random() * 400 + 100).toFixed(0), 'Mock avg time'],
+        ['Query Length', query.length, 'Characters'],
+        ['Random Score (%)', (Math.random() * 100).toFixed(2), 'For demo'],
+        ['Latency (ms)', (Math.random() * 300 + 100).toFixed(0), 'Mock'],
       ],
       meta: { generatedAt: now },
     },
@@ -60,6 +85,7 @@ function sampleStructuredResponse(query) {
 app.use(cors());
 app.use(express.json());
 
+// Routes
 app.get('/api/sessions', (req, res) => {
   res.json(listSessions());
 });
@@ -73,7 +99,7 @@ app.get('/api/session/:id', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
 
-  const history = session.messages.map(msg => ({
+  const history = session.messages.map((msg) => ({
     id: msg.id,
     type: msg.role,
     content: msg.text,
@@ -93,8 +119,10 @@ app.post('/api/chat/:id', (req, res) => {
     return res.status(400).json({ error: 'Invalid session or missing question' });
   }
 
+  // Add user message
   addMessage(sessionId, 'user', userQuestion);
 
+  // Mock assistant response
   setTimeout(() => {
     const structuredData = sampleStructuredResponse(userQuestion);
     const assistantMessage = addMessage(
@@ -120,11 +148,13 @@ app.post('/api/chat/:id', (req, res) => {
 
 app.post('/api/messages/:id/feedback', (req, res) => {
   const messageId = req.params.id;
-  const { feedback } = req.body; // 'like' or 'dislike'
+  const { feedback } = req.body;
 
   let found = false;
   for (const session of Object.values(sessions)) {
-    const msg = session.messages.find(m => m.id === messageId && m.role === 'assistant');
+    const msg = session.messages.find(
+      (m) => m.id === messageId && m.role === 'assistant'
+    );
     if (msg) {
       msg.feedback = feedback;
       found = true;
@@ -137,6 +167,16 @@ app.post('/api/messages/:id/feedback', (req, res) => {
   res.json({ success: true, feedback });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-});
+// ------------------
+// Export for Vercel
+// ------------------
+module.exports = app;
+
+// ------------------
+// Local development
+// ------------------
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Local server running at http://localhost:${PORT}`);
+  });
+}
