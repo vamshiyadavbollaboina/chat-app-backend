@@ -3,7 +3,7 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-const PORT = process.env.PORT || 5000;  
+const PORT = 5000;
 
 // Sessions stored in memory
 const sessions = {};
@@ -12,19 +12,20 @@ const sessions = {};
 function createSession(title = null) {
   const id = uuidv4();
   const createdAt = new Date().toISOString();
+
   const sTitle =
     title ||
     `Chat - ${new Date(createdAt).toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit',
-      second: '2-digit',
+      second: '2-digit'
     })}`;
 
   sessions[id] = {
     id,
     title: sTitle,
     createdAt,
-    messages: [],
+    messages: []
   };
 
   return sessions[id];
@@ -37,7 +38,7 @@ function listSessions() {
       id: s.id,
       title: s.title,
       createdAt: s.createdAt,
-      messageCount: s.messages.length,
+      messageCount: s.messages.length
     }))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
@@ -58,7 +59,7 @@ function addMessage(sessionId, role, text, structured = null, feedback = null) {
     text,
     structured,
     feedback,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date().toISOString()
   };
 
   s.messages.push(msg);
@@ -68,6 +69,7 @@ function addMessage(sessionId, role, text, structured = null, feedback = null) {
 // Mock structured response
 function sampleStructuredResponse(query) {
   const now = new Date().toISOString();
+
   return {
     description: `Processed your query: "${query.substring(0, 20)}..."`,
     table: {
@@ -75,29 +77,36 @@ function sampleStructuredResponse(query) {
       rows: [
         ['Query Length', query.length, 'Characters'],
         ['Random Score (%)', (Math.random() * 100).toFixed(2), 'For demo'],
-        ['Latency (ms)', (Math.random() * 300 + 100).toFixed(0), 'Mock'],
+        ['Latency (ms)', (Math.random() * 300 + 100).toFixed(0), 'Mock']
       ],
-      meta: { generatedAt: now },
-    },
+      meta: { generatedAt: now }
+    }
   };
 }
 
+// Middlewares
 app.use(cors());
 app.use(express.json());
 
-// Routes
+// -------------------- ROUTES --------------------
+
+// Get all sessions
 app.get('/api/sessions', (req, res) => {
   res.json(listSessions());
 });
 
+// Create a new session
 app.get('/api/new-chat', (req, res) => {
   const newSession = createSession();
   res.json({ sessionId: newSession.id, createdAt: newSession.createdAt });
 });
 
+// Get session history
 app.get('/api/session/:id', (req, res) => {
   const session = getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: 'Session not found' });
+
+  if (!session)
+    return res.status(404).json({ error: 'Session not found' });
 
   const history = session.messages.map((msg) => ({
     id: msg.id,
@@ -105,22 +114,27 @@ app.get('/api/session/:id', (req, res) => {
     content: msg.text,
     tabularData: msg.structured ? msg.structured.table : undefined,
     timestamp: msg.createdAt,
-    feedback: msg.feedback || null,
+    feedback: msg.feedback || null
   }));
 
   res.json(history);
 });
 
+// Chat API
 app.post('/api/chat/:id', (req, res) => {
   const sessionId = req.params.id;
   const userQuestion = req.body.question;
 
   if (!userQuestion || !getSession(sessionId)) {
-    return res.status(400).json({ error: 'Invalid session or missing question' });
+    return res
+      .status(400)
+      .json({ error: 'Invalid session or missing question' });
   }
 
-  addMessage(sessionId, 'user', userQuestion)
+  // Save user message
+  addMessage(sessionId, 'user', userQuestion);
 
+  // Simulate delay + AI response
   setTimeout(() => {
     const structuredData = sampleStructuredResponse(userQuestion);
     const assistantMessage = addMessage(
@@ -128,7 +142,7 @@ app.post('/api/chat/:id', (req, res) => {
       'assistant',
       structuredData.description,
       structuredData
-    )
+    );
 
     const session = getSession(sessionId);
 
@@ -139,20 +153,23 @@ app.post('/api/chat/:id', (req, res) => {
       tabularData: assistantMessage.structured.table,
       timestamp: assistantMessage.createdAt,
       feedback: assistantMessage.feedback || null,
-      newTitle: session.title,
+      newTitle: session.title
     });
   }, 1000);
 });
 
+// Feedback API
 app.post('/api/messages/:id/feedback', (req, res) => {
   const messageId = req.params.id;
   const { feedback } = req.body;
 
   let found = false;
+
   for (const session of Object.values(sessions)) {
     const msg = session.messages.find(
       (m) => m.id === messageId && m.role === 'assistant'
     );
+
     if (msg) {
       msg.feedback = feedback;
       found = true;
@@ -160,16 +177,15 @@ app.post('/api/messages/:id/feedback', (req, res) => {
     }
   }
 
-  if (!found) return res.status(404).json({ error: 'Message not found' });
+  if (!found)
+    return res.status(404).json({ error: 'Message not found' });
 
   res.json({ success: true, feedback });
 });
 
-module.exports = app
+// -----------------------------------------------------
 
-// Local mode
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Local server running at http://localhost:${PORT}`);
-  });
-}
+// Run server
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`);
+});
