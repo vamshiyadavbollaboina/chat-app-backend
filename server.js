@@ -1,11 +1,27 @@
 const { v4: uuidv4 } = require("uuid");
+// ⚠️ NOTE: You must install the Vercel KV SDK: `npm install @vercel/kv`
+// const { kv } = require("@vercel/kv"); 
+// 
+// --- Placeholder for Vercel KV Client ---
+// For demonstration, we will use a temporary in-memory object 
+// that will cause issues on cold starts, but shows the database structure.
+// In a real deployment, replace this with actual database calls.
+let sessions = {}; 
+const kv = {
+  get: async (key) => sessions[key],
+  set: async (key, value) => { sessions[key] = value; return value; },
+  keys: async () => Object.keys(sessions),
+  del: async (key) => { delete sessions[key]; return true; },
+};
+// ----------------------------------------
 
-// ---------------- MEMORY (persists only on warm instances) ----------------
-let sessions = {};
 
 // ---------------- UTIL FUNCTIONS ----------------
 
-function createSession(title = null) {
+/**
+ * Creates a new session and persists it to the database.
+ */
+async function createSession(title = null) {
   const id = uuidv4();
   const createdAt = new Date().toISOString();
 
@@ -17,18 +33,32 @@ function createSession(title = null) {
       second: "2-digit",
     })}`;
 
-  sessions[id] = {
+  const newSession = {
     id,
     title: sTitle,
     createdAt,
     messages: [],
   };
 
-  return sessions[id];
+  // 1. PERSIST: Save the new session to the external store (e.g., Vercel KV)
+  await kv.set(`session:${id}`, newSession);
+
+  return newSession;
 }
 
-function listSessions() {
-  return Object.values(sessions)
+/**
+ * Lists all sessions from the database. (Requires getting all keys, which is slow/expensive)
+ * In production, you would need a proper DB index for this.
+ */
+async function listSessions() {
+  // 2. RETRIEVE ALL: Simulate retrieving all sessions. This operation is often 
+  // slow/expensive in key-value stores and should be optimized in a real app.
+  const sessionKeys = await kv.keys("session:*");
+  const sessionPromises = sessionKeys.map(key => kv.get(key));
+  const sessionObjects = await Promise.all(sessionPromises);
+
+  return sessionObjects
+    .filter(s => s != null) // Filter out any nulls
     .map((s) => ({
       id: s.id,
       title: s.title,
@@ -38,12 +68,20 @@ function listSessions() {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
-function getSession(id) {
-  return sessions[id] || null;
+/**
+ * Retrieves a single session by ID from the database.
+ */
+async function getSession(id) {
+  // 3. RETRIEVE ONE: Get the session object from the external store
+  return await kv.get(`session:${id}`);
 }
 
-function addMessage(sessionId, role, text, structured = null, feedback = null) {
-  const s = sessions[sessionId];
+/**
+ * Adds a message to a session and updates the record in the database.
+ */
+async function addMessage(sessionId, role, text, structured = null, feedback = null) {
+  // 4. TRANSACTION/UPDATE: Get, modify, then set (requires atomic operations in production)
+  const s = await getSession(sessionId);
   if (!s) return null;
 
   const msg = {
@@ -56,12 +94,16 @@ function addMessage(sessionId, role, text, structured = null, feedback = null) {
   };
 
   s.messages.push(msg);
+
+  // Update the session record in the external store
+  await kv.set(`session:${sessionId}`, s);
+
   return msg;
 }
 
 function structuredReply(query) {
   const now = new Date().toISOString();
-
+  // (Function logic remains the same)
   return {
     description: `Processed your query: "${query.substring(0, 20)}..."`,
     table: {
@@ -79,30 +121,32 @@ function structuredReply(query) {
 // ---------------- SERVERLESS HANDLER ----------------
 
 exports.handler = async (event) => {
-  try {
-    const headers = {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "*",
-    };
+  const headers = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*",
+  };
 
+  try {
     // Preflight CORS
     if (event.httpMethod === "OPTIONS") {
       return { statusCode: 200, headers };
     }
 
     const path = event.path || "/";
+    const pathSegments = path.split("/").filter(Boolean);
 
     // ---------------- ROUTES ----------------
 
     // GET /sessions
     if (path.endsWith("/sessions") && event.httpMethod === "GET") {
-      return { statusCode: 200, headers, body: JSON.stringify(listSessions()) };
+      const sessionsList = await listSessions();
+      return { statusCode: 200, headers, body: JSON.stringify(sessionsList) };
     }
 
     // GET /new-chat
     if (path.endsWith("/new-chat") && event.httpMethod === "GET") {
-      const session = createSession();
+      const session = await createSession();
       return {
         statusCode: 200,
         headers,
@@ -111,9 +155,9 @@ exports.handler = async (event) => {
     }
 
     // GET /session/:id
-    if (path.includes("/session/") && event.httpMethod === "GET") {
-      const id = path.split("/").pop();
-      const session = getSession(id);
+    if (path.includes("/session/") && event.httpMethod === "GET" && pathSegments.length === 2) {
+      const id = pathSegments.pop();
+      const session = await getSession(id);
 
       if (!session) {
         return { statusCode: 404, headers, body: JSON.stringify({ error: "Session not found" }) };
@@ -132,18 +176,19 @@ exports.handler = async (event) => {
     }
 
     // POST /chat/:id
-    if (path.includes("/chat/") && event.httpMethod === "POST") {
-      const id = path.split("/").pop();
-      const session = getSession(id);
+    if (path.includes("/chat/") && event.httpMethod === "POST" && pathSegments.length === 2) {
+      const id = pathSegments.pop();
+      const session = await getSession(id); // Use the async getSession
 
       if (!session) {
+        // Now returns 404/400 instead of crashing if the session ID is not found
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid session" }) };
       }
 
       let body = {};
       try {
         body = JSON.parse(event.body || "{}");
-      } catch {
+      } catch (e) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
       }
 
@@ -152,9 +197,11 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing question" }) };
       }
 
-      addMessage(id, "user", question);
+      // Use async addMessage
+      await addMessage(id, "user", question);
+      
       const structuredData = structuredReply(question);
-      const assistant = addMessage(id, "assistant", structuredData.description, structuredData);
+      const assistant = await addMessage(id, "assistant", structuredData.description, structuredData);
 
       return {
         statusCode: 200,
@@ -172,13 +219,13 @@ exports.handler = async (event) => {
     }
 
     // POST /messages/:id/feedback
-    if (path.includes("/messages/") && event.httpMethod === "POST") {
-      const messageId = path.split("/").pop();
+    if (path.includes("/messages/") && event.httpMethod === "POST" && pathSegments.length === 3 && pathSegments[1] === "messages") {
+      const messageId = pathSegments.pop();
 
       let body = {};
       try {
         body = JSON.parse(event.body || "{}");
-      } catch {
+      } catch (e) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
       }
 
@@ -187,11 +234,20 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing feedback" }) };
       }
 
+      // 5. FIND & UPDATE: Iterate through all sessions to find the message
+      const sessionKeys = await kv.keys("session:*");
+      const sessionPromises = sessionKeys.map(key => kv.get(key));
+      const allSessions = await Promise.all(sessionPromises);
+
       let found = false;
-      for (const session of Object.values(sessions)) {
+      for (const session of allSessions) {
+        if (!session) continue;
         const msg = session.messages.find((m) => m.id === messageId && m.role === "assistant");
+        
         if (msg) {
           msg.feedback = feedback;
+          // Update the session record in the external store
+          await kv.set(`session:${session.id}`, session); 
           found = true;
           break;
         }
@@ -208,6 +264,7 @@ exports.handler = async (event) => {
     return { statusCode: 404, headers, body: JSON.stringify({ error: "Route not found" }) };
   } catch (err) {
     console.error("Function crashed:", err);
-    return { statusCode: 500, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ error: "Internal Server Error" }) };
+    // The main error handler remains for unexpected errors
+    return { statusCode: 500, headers, body: JSON.stringify({ error: "Internal Server Error" }) };
   }
 };
