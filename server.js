@@ -3,7 +3,7 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;  
 
 // Sessions stored in memory
 const sessions = {};
@@ -119,10 +119,8 @@ app.post('/api/chat/:id', (req, res) => {
     return res.status(400).json({ error: 'Invalid session or missing question' });
   }
 
-  // Add user message
-  addMessage(sessionId, 'user', userQuestion);
+  addMessage(sessionId, 'user', userQuestion)
 
-  // Mock assistant response
   setTimeout(() => {
     const structuredData = sampleStructuredResponse(userQuestion);
     const assistantMessage = addMessage(
@@ -130,7 +128,7 @@ app.post('/api/chat/:id', (req, res) => {
       'assistant',
       structuredData.description,
       structuredData
-    );
+    )
 
     const session = getSession(sessionId);
 
@@ -167,14 +165,9 @@ app.post('/api/messages/:id/feedback', (req, res) => {
   res.json({ success: true, feedback });
 });
 
-// ------------------
-// Export for Vercel
-// ------------------
-module.exports = app;
+module.exports = app
 
-// ------------------
-// Local development
-// ------------------
+// Local mode
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Local server running at http://localhost:${PORT}`);
